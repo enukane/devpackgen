@@ -19,6 +19,33 @@
 
 #include "etherif.h"
 
+/*  packet record & gen */
+#define	PG_MAX_RECORD	128
+enum {
+	PGinit	= 0,
+	PGrecstop = 1
+	PGrec	= 2,
+	PGstart	= 3,
+	PGstop	= 4,
+};
+
+static int pgmode = PGinit;
+
+static void 
+pg_record(Block *bp)
+{
+
+}
+
+static Block*
+pg_get_next_record()
+{
+	Block *bp;
+	return bp;
+}
+
+/*  packe record & gen ends here */
+
 /*
  * these are in the order they appear in the manual, not numeric order.
  * It was too hard to find them in the book. Ref 21489, rev 2.6
@@ -900,8 +927,18 @@ i82563transmit(Ether* edev)
 			i82563im(ctlr, Txdw);
 			break;
 		}
-		if((bp = qget(edev->oq)) == nil)
-			break;
+		if((bp = qget(edev->oq)) == nil) {
+			if (pgmode != PGstart) {
+				break;
+			}
+
+			if ((bp = pg_get_next_record()) == nil) {
+				break;
+			}
+		}
+		if (pgmode == PGrec) {
+			pg_record(bp);
+		}
 		td = &ctlr->tdba[tdt];
 		td->addr[0] = PCIWADDR(bp->rp);
 		td->control = Ide|Rs|Ifcs|Teop|BLEN(bp);
@@ -1771,3 +1808,162 @@ ether82563link(void)
 	addethercard("i82575", i82575pnp);
 	addethercard("igbepcie", anypnp);
 }
+
+
+/* Packet Recorder & Generator */
+
+static void
+pg_init_buf()
+{
+
+}
+
+static void
+pg_copy_mode(char *buf, vlong off, long n)
+{
+
+}
+
+static void
+pg_set_mode(char *cmd, int size)
+{
+	int mode = 0;
+
+	if (0 == cmd)
+		return;
+
+	if (0 == strcmp(cmd, "rec") ){
+		syslog(1, "pg", "pgsetmode : rec");
+
+	} else if (0 == strcmp(cmd, "start")) {
+		syslog(1, "pg", "pgsetmode : start");
+	} else if( 0 == strcmp(cmd, "stop")) {
+		syslog(1, "pg", "pgsetmode : stop");
+	} else {
+		syslog(1, "pg", "pgsetmode : ????");
+		return;
+	}
+
+}
+
+enum {
+	Qdir,
+	Qcmd,
+};
+
+static Dirtab pgdir[] = {
+	".",		{ Qdir, 0, QTDIR },		0,	DMDIR|055,
+	"packgencmd",	{ Qrecord },			0,	0777,
+};
+
+static void
+pgreset(void)
+{
+	pg_init_buf();
+}
+
+static void
+pginit(void)
+{
+	pg_init_buf();
+}
+
+static Chan*
+pgattach(char *spec)
+{
+	return devattach('P', spec);	
+}
+
+static Chan*
+pgwalk(Chan *c, Chan *nc, char **name, int nname)
+{
+	return devwalk(c, nc, name, nname, pgdir, nelem(pgdir), devgen);
+}
+
+static int
+pgstat(Chan *c, ucahr *dp, int n)
+{
+	return devstat(c, dp, n, pgdir, nelem(pgdif), devgen);
+}
+
+static Chan*
+pgopen(Chan *c, int omode)
+{
+	if (!iseve()) {
+		error(Eperm);
+	}
+
+	return devopen(c, omode, pgdir, nelem(pgdir), devgen);
+}
+
+static void
+pgclose(char *c)
+{
+	if (c->aux) {
+		free(c->aux);
+		c->aux = nil;
+	}
+
+	return;
+}
+
+static long
+pgread(Chan *c, void *va, long n, vlong off)
+{
+	int rn = 0;
+	switch ((ulong)c->qid.path) {
+		case Qdir:
+			return devdirread(c, va, n, pgdir, nelem(pgdir), devgen);
+			break;
+		case Qcmd:
+			/*  XXX: show mode */
+			pg_copy_mode(off, va, n);
+			break;
+		default:
+			syslog(1, "pg", "pgread : default");
+			break;
+	}
+
+	return rn;
+}
+
+static long
+pgwrite(Chan *c, void *va, long n, vlong)
+{
+	int rn = 0;
+	switch ((ulong)c->qid.path) {
+		case Qdir:
+			error(Eisdir);
+			break;
+		case Qcmd:
+			/*  XXX: set mode */
+			pg_set_mode((char *)va, n);
+			rn = n;
+			break;
+		default:
+			syslog(1, "pg", "pgwrite : default %s", (char *)va);
+			break;
+	}
+
+	return rn;
+}
+
+Dev packetgeneratordevtab = {
+	'P',
+	"packgen",
+	pgreset,
+	devinit,
+	devshutdown,
+	pgattach,
+	pgwalk,
+	pgstat,
+	pgopen,
+	devcreate,
+	pgclose,
+	pgread,
+	devgread,
+	pgwrite,
+	devbwrite,
+	devremove,
+	devwstat,
+};
