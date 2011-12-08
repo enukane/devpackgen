@@ -30,17 +30,88 @@ enum {
 };
 
 static int pgmode = PGinit;
+static int pgrecidx = 0;
+static int pgrunidx = 0;
+
+static Block	*recorded_blocks[PG_MAX_RECORD];
+
+static struct Etherpkt*
+dup_ep(struct Etherpkt *pkt)
+{
+	Etherpkt *duped;
+
+	duped = malloc(sizeof(struct Etherpkt));
+	if (duped == nil)
+		return nil;
+
+	memset(duped, 0, sizeof(struct Etherpkt));
+	memcpy(duped, pkt, sizeof(struct Etherpkt));
+
+	return duped;
+}
+
+static Block*
+dup_bp(BLock *bp)
+{
+	Block *duped;
+	
+	duped = malloc(sizeof(Block));
+	if (duped == nil)
+		return nil;
+
+	memset(duped, 0, sizeof(Block));
+	memcpy(duped, bp, sizeof(Block));
+
+	duped->rp = dup_epkt(bp->rp);
+	if (duped->rp == nil)
+		return nil;
+	duped->wp = duped->rp + bp->lim;
+
+	return duped;
+}
+
+static void
+free_bp(Block *bp)
+{
+	if (bp->rp)
+		free((struct Etherpkt *)bp->rp);
+
+	free(bp);
+
+	return;
+}
 
 static void 
 pg_record(Block *bp)
 {
+	Block *duped;
 
+	if (pgidx >= PG_MAX_RECORD)
+		return;
+
+	if ((duped = dup_bp(bp)) == nil)
+		return;
+
+	if (recorded_blocks[pgrecidx] != nil) {
+		free(recorded_blocks[pgrecidx]->rp);
+		free(recorded_blocks[pgrecidx]);
+	}
+
+	recorded_blocks[pgidx++] = duped;
+	
+	return;
 }
 
 static Block*
 pg_get_next_record()
 {
 	Block *bp;
+
+	bp = recorded_blocks[pgrunidx++];
+	
+	if (pgrunidx >= PG_MAX_RECORD)
+		pgrunidx = 0;
+
 	return bp;
 }
 
@@ -1815,6 +1886,17 @@ ether82563link(void)
 static void
 pg_init_buf()
 {
+	int i = 0;
+	
+	for (i=0; i < PG_MAX_RECORD; i++) {
+		if (recorded_blocks[i])
+			free_bup(recorded_blocks[i]);
+		recorded_blocks[i] = nil;
+	}
+
+	pgrecidx = 0;
+	pgrunidx = 0;
+	pgmode = PGinit;
 
 }
 
@@ -1834,11 +1916,14 @@ pg_set_mode(char *cmd, int size)
 
 	if (0 == strcmp(cmd, "rec") ){
 		syslog(1, "pg", "pgsetmode : rec");
+		pgmode = PGrec;
 
 	} else if (0 == strcmp(cmd, "start")) {
 		syslog(1, "pg", "pgsetmode : start");
+		pgmode = PGstart;
 	} else if( 0 == strcmp(cmd, "stop")) {
 		syslog(1, "pg", "pgsetmode : stop");
+		pgmode = PGstop;
 	} else {
 		syslog(1, "pg", "pgsetmode : ????");
 		return;
