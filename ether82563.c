@@ -996,7 +996,8 @@ i82563transmit(Ether* edev)
 		if(Next(tdt, m) == tdh){
 			ctlr->txdw++;
 			i82563im(ctlr, Txdw);
-			break;
+			if (pgmode != PGstart) 
+				break;
 		}
 		if((bp = qget(edev->oq)) == nil) {
 			if (pgmode != PGstart) {
