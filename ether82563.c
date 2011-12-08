@@ -19,103 +19,7 @@
 
 #include "etherif.h"
 
-/*  packet record & gen */
-#define	PG_MAX_RECORD	128
-enum {
-	PGinit	= 0,
-	PGrecstop = 1
-	PGrec	= 2,
-	PGstart	= 3,
-	PGstop	= 4,
-};
-
-static int pgmode = PGinit;
-static int pgrecidx = 0;
-static int pgrunidx = 0;
-
-static Block	*recorded_blocks[PG_MAX_RECORD];
-
-static struct Etherpkt*
-dup_ep(struct Etherpkt *pkt)
-{
-	Etherpkt *duped;
-
-	duped = malloc(sizeof(struct Etherpkt));
-	if (duped == nil)
-		return nil;
-
-	memset(duped, 0, sizeof(struct Etherpkt));
-	memcpy(duped, pkt, sizeof(struct Etherpkt));
-
-	return duped;
-}
-
-static Block*
-dup_bp(BLock *bp)
-{
-	Block *duped;
-	
-	duped = malloc(sizeof(Block));
-	if (duped == nil)
-		return nil;
-
-	memset(duped, 0, sizeof(Block));
-	memcpy(duped, bp, sizeof(Block));
-
-	duped->rp = dup_epkt(bp->rp);
-	if (duped->rp == nil)
-		return nil;
-	duped->wp = duped->rp + bp->lim;
-
-	return duped;
-}
-
-static void
-free_bp(Block *bp)
-{
-	if (bp->rp)
-		free((struct Etherpkt *)bp->rp);
-
-	free(bp);
-
-	return;
-}
-
-static void 
-pg_record(Block *bp)
-{
-	Block *duped;
-
-	if (pgidx >= PG_MAX_RECORD)
-		return;
-
-	if ((duped = dup_bp(bp)) == nil)
-		return;
-
-	if (recorded_blocks[pgrecidx] != nil) {
-		free(recorded_blocks[pgrecidx]->rp);
-		free(recorded_blocks[pgrecidx]);
-	}
-
-	recorded_blocks[pgidx++] = duped;
-	
-	return;
-}
-
-static Block*
-pg_get_next_record()
-{
-	Block *bp;
-
-	bp = recorded_blocks[pgrunidx++];
-	
-	if (pgrunidx >= PG_MAX_RECORD)
-		pgrunidx = 0;
-
-	return bp;
-}
-
-/*  packe record & gen ends here */
+#include "./devpackgen.h"
 
 /*
  * these are in the order they appear in the manual, not numeric order.
@@ -961,7 +865,11 @@ i82563cleanup(Ctlr *c)
 		tdh = n;
 		if((b = c->tb[tdh]) != nil){
 			c->tb[tdh] = nil;
-			freeb(b);
+			if (pgmode == PGrec) {
+				pg_record(b);
+			} else {
+				freeb(b);
+			} 
 		}else
 			iprint("82563 tx underrun!\n");
 		c->tdba[tdh].status = 0;
@@ -977,6 +885,7 @@ i82563transmit(Ether* edev)
 	Block *bp;
 	Ctlr *ctlr;
 	int tdh, tdt, m;
+	int i = 0;
 
 	ctlr = edev->ctlr;
 
@@ -996,7 +905,7 @@ i82563transmit(Ether* edev)
 		if(Next(tdt, m) == tdh){
 			ctlr->txdw++;
 			i82563im(ctlr, Txdw);
-			if (pgmode != PGstart) 
+			if (pgmode == PGstart) 
 				break;
 		}
 		if((bp = qget(edev->oq)) == nil) {
@@ -1007,10 +916,13 @@ i82563transmit(Ether* edev)
 			if ((bp = pg_get_next_record()) == nil) {
 				break;
 			}
+
+			if (bp->rp == (void*)0x51494F42)
+				break;
+			print("done %d, ", i);
+			i++;
 		}
-		if (pgmode == PGrec) {
-			pg_record(bp);
-		}
+
 		td = &ctlr->tdba[tdt];
 		td->addr[0] = PCIWADDR(bp->rp);
 		td->control = Ide|Rs|Ifcs|Teop|BLEN(bp);
@@ -1881,175 +1793,3 @@ ether82563link(void)
 	addethercard("igbepcie", anypnp);
 }
 
-
-/* Packet Recorder & Generator */
-
-static void
-pg_init_buf()
-{
-	int i = 0;
-	
-	for (i=0; i < PG_MAX_RECORD; i++) {
-		if (recorded_blocks[i])
-			free_bup(recorded_blocks[i]);
-		recorded_blocks[i] = nil;
-	}
-
-	pgrecidx = 0;
-	pgrunidx = 0;
-	pgmode = PGinit;
-
-}
-
-static void
-pg_copy_mode(char *buf, vlong off, long n)
-{
-
-}
-
-static void
-pg_set_mode(char *cmd, int size)
-{
-	int mode = 0;
-
-	if (0 == cmd)
-		return;
-
-	if (0 == strcmp(cmd, "rec") ){
-		syslog(1, "pg", "pgsetmode : rec");
-		pgmode = PGrec;
-
-	} else if (0 == strcmp(cmd, "start")) {
-		syslog(1, "pg", "pgsetmode : start");
-		pgmode = PGstart;
-	} else if( 0 == strcmp(cmd, "stop")) {
-		syslog(1, "pg", "pgsetmode : stop");
-		pgmode = PGstop;
-	} else {
-		syslog(1, "pg", "pgsetmode : ????");
-		return;
-	}
-
-}
-
-enum {
-	Qdir,
-	Qcmd,
-};
-
-static Dirtab pgdir[] = {
-	".",		{ Qdir, 0, QTDIR },		0,	DMDIR|055,
-	"packgencmd",	{ Qrecord },			0,	0777,
-};
-
-static void
-pgreset(void)
-{
-	pg_init_buf();
-}
-
-static void
-pginit(void)
-{
-	pg_init_buf();
-}
-
-static Chan*
-pgattach(char *spec)
-{
-	return devattach('P', spec);	
-}
-
-static Chan*
-pgwalk(Chan *c, Chan *nc, char **name, int nname)
-{
-	return devwalk(c, nc, name, nname, pgdir, nelem(pgdir), devgen);
-}
-
-static int
-pgstat(Chan *c, ucahr *dp, int n)
-{
-	return devstat(c, dp, n, pgdir, nelem(pgdif), devgen);
-}
-
-static Chan*
-pgopen(Chan *c, int omode)
-{
-	if (!iseve()) {
-		error(Eperm);
-	}
-
-	return devopen(c, omode, pgdir, nelem(pgdir), devgen);
-}
-
-static void
-pgclose(char *c)
-{
-	if (c->aux) {
-		free(c->aux);
-		c->aux = nil;
-	}
-
-	return;
-}
-
-static long
-pgread(Chan *c, void *va, long n, vlong off)
-{
-	int rn = 0;
-	switch ((ulong)c->qid.path) {
-		case Qdir:
-			return devdirread(c, va, n, pgdir, nelem(pgdir), devgen);
-			break;
-		case Qcmd:
-			/*  XXX: show mode */
-			pg_copy_mode(off, va, n);
-			break;
-		default:
-			syslog(1, "pg", "pgread : default");
-			break;
-	}
-
-	return rn;
-}
-
-static long
-pgwrite(Chan *c, void *va, long n, vlong)
-{
-	int rn = 0;
-	switch ((ulong)c->qid.path) {
-		case Qdir:
-			error(Eisdir);
-			break;
-		case Qcmd:
-			/*  XXX: set mode */
-			pg_set_mode((char *)va, n);
-			rn = n;
-			break;
-		default:
-			syslog(1, "pg", "pgwrite : default %s", (char *)va);
-			break;
-	}
-
-	return rn;
-}
-
-Dev packetgeneratordevtab = {
-	'P',
-	"packgen",
-	pgreset,
-	devinit,
-	devshutdown,
-	pgattach,
-	pgwalk,
-	pgstat,
-	pgopen,
-	devcreate,
-	pgclose,
-	pgread,
-	devgread,
-	pgwrite,
-	devbwrite,
-	devremove,
-	devwstat,
-};
